@@ -292,7 +292,11 @@ def derive_mood(energy: float, valence: float) -> str:
             return "melancholic"
 
 
-def load_spotify_csv(csv_path: str, max_songs: Optional[int] = None) -> List[Dict]:
+def load_spotify_csv(
+    csv_path: str,
+    max_songs: Optional[int] = None,
+    songs_per_genre: Optional[int] = None,
+) -> List[Dict]:
     """
     Loads a real song catalogue from the Kaggle Spotify Tracks Dataset and
     converts it to the internal song format expected by score_song() and the
@@ -313,8 +317,11 @@ def load_spotify_csv(csv_path: str, max_songs: Optional[int] = None) -> List[Dic
       mood         → derived via derive_mood(energy, valence)
 
     ── Parameters ───────────────────────────────────────────────────────────
-    csv_path  : path to dataset.csv
-    max_songs : optional cap (useful during development to keep things fast)
+    csv_path       : path to dataset.csv
+    max_songs      : hard cap on total songs loaded
+    songs_per_genre: load at most this many songs from each genre — use this
+                     instead of max_songs to get a balanced sample across all
+                     genres (e.g. songs_per_genre=100 → ~11 400 songs, 114 genres)
 
     ── Returns ──────────────────────────────────────────────────────────────
     List[Dict] in the same format as load_songs(), ready for
@@ -322,8 +329,9 @@ def load_spotify_csv(csv_path: str, max_songs: Optional[int] = None) -> List[Dic
     """
     import csv
 
-    float_fields = {"energy", "valence", "danceability", "acousticness", "tempo"}
+    float_fields  = {"energy", "valence", "danceability", "acousticness", "tempo"}
     songs: List[Dict] = []
+    genre_counts: Dict[str, int] = defaultdict(int)
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -338,16 +346,20 @@ def load_spotify_csv(csv_path: str, max_songs: Optional[int] = None) -> List[Dic
             energy    = row["energy"]
             valence   = row["valence"]
             tempo_bpm = row["tempo"]
+            genre     = row.get("track_genre", "unknown")
 
-            # Skip songs with out-of-range values
             if not (0.0 <= energy <= 1.0 and 0.0 <= valence <= 1.0):
+                continue
+
+            # Stratified cap: skip this row if genre already has enough songs
+            if songs_per_genre and genre_counts[genre] >= songs_per_genre:
                 continue
 
             songs.append({
                 "id":           row.get("track_id", ""),
                 "title":        row.get("track_name", "Unknown"),
                 "artist":       row.get("artists", "Unknown"),
-                "genre":        row.get("track_genre", "unknown"),
+                "genre":        genre,
                 "mood":         derive_mood(energy, valence),
                 "energy":       energy,
                 "valence":      valence,
@@ -355,6 +367,7 @@ def load_spotify_csv(csv_path: str, max_songs: Optional[int] = None) -> List[Dic
                 "acousticness": row["acousticness"],
                 "tempo_bpm":    tempo_bpm,
             })
+            genre_counts[genre] += 1
 
             if max_songs and len(songs) >= max_songs:
                 break

@@ -14,6 +14,7 @@ import sys
 import random
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
 # UTF-8 output so non-ASCII artist/track names print correctly on Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -79,19 +80,15 @@ def sample_diverse(songs: list, per_genre: int = 2) -> list:
     return sample
 
 
-def search_by_title(songs: list, query: str, max_results: int = 20) -> list:
+def search_by_title(songs: list, query: str) -> list:
     """Case-insensitive substring search across title and artist name."""
     q = query.lower()
-    matches = [s for s in songs if q in s["title"].lower() or q in s["artist"].lower()]
-    return matches[:max_results]
+    return [s for s in songs if q in s["title"].lower() or q in s["artist"].lower()]
 
 
-def search_by_genre(songs: list, genre: str, max_results: int = 20) -> list:
-    """Returns up to max_results songs that exactly match the given genre."""
-    matches = [s for s in songs if s["genre"].lower() == genre.lower()]
-    if len(matches) > max_results:
-        matches = random.sample(matches, max_results)
-    return matches
+def search_by_genre(songs: list, genre: str) -> list:
+    """Returns all songs that exactly match the given genre."""
+    return [s for s in songs if s["genre"].lower() == genre.lower()]
 
 
 def list_genres(songs: list) -> list:
@@ -117,6 +114,143 @@ def ask_picks(songs: list) -> list:
             print("  None of those numbers matched. Try again.")
         except ValueError:
             print("  Please enter numbers only, separated by commas or spaces.")
+
+
+PAGE_SIZE       = 10   # songs per page
+GENRE_PAGE_SIZE = 20   # genres per page
+
+
+def paginate_and_pick(results: list, liked: list, label: str = "results") -> None:
+    """
+    Pages through a result list PAGE_SIZE songs at a time.
+    On each page the user can:
+      - Type numbers (1-10) to like songs from the current page
+      - Type  n  to go to the next page
+      - Type  p  to go to the previous page
+      - Press Enter to return to the main menu
+    Picked songs are appended to liked in-place.
+    """
+    if not results:
+        print("  No songs found.")
+        return
+
+    total       = len(results)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page        = 0
+
+    while True:
+        start      = page * PAGE_SIZE
+        end        = min(start + PAGE_SIZE, total)
+        page_songs = results[start:end]
+
+        print(f"\n  Page {page + 1} of {total_pages}  ({total} {label})\n")
+        print_song_list(page_songs)
+
+        # Build navigation hint based on what's available
+        nav_parts = []
+        if page > 0:
+            nav_parts.append("[p] prev")
+        if page < total_pages - 1:
+            nav_parts.append("[n] next")
+        pick_range = f"1" if len(page_songs) == 1 else f"1-{len(page_songs)}"
+        nav_parts.append(f"[{pick_range}] like  [Enter] back")
+        print(f"\n  {' | '.join(nav_parts)}")
+
+        raw = input("  > ").strip().lower()
+
+        if not raw:
+            break
+        elif raw == "n":
+            if page < total_pages - 1:
+                page += 1
+            else:
+                print("  Already on the last page.")
+        elif raw == "p":
+            if page > 0:
+                page -= 1
+            else:
+                print("  Already on the first page.")
+        else:
+            try:
+                indices      = [int(x) - 1 for x in raw.replace(",", " ").split() if x]
+                picks        = [page_songs[i] for i in indices if 0 <= i < len(page_songs)]
+                liked_titles = {s["title"] for s in liked}
+                new_picks    = [s for s in picks if s["title"] not in liked_titles]
+                duplicates   = [s for s in picks if s["title"] in liked_titles]
+
+                if duplicates:
+                    for s in duplicates:
+                        print(f'  Already liked: "{s["title"]}"')
+                if new_picks:
+                    liked.extend(new_picks)
+                    for s in new_picks:
+                        print(f'  Liked: "{s["title"]}" -- {s["artist"]}')
+                if not picks:
+                    print("  No valid numbers for this page. Try again.")
+            except ValueError:
+                print("  Enter numbers to pick, 'n'/'p' to navigate, or Enter to go back.")
+
+
+def paginate_genres(genres: list) -> Optional[str]:
+    """
+    Pages through the genre list GENRE_PAGE_SIZE entries at a time.
+    The user can navigate with n/p or type part of a genre name to jump
+    directly to it without browsing every page.
+    Returns the selected genre string, or None if the user cancels.
+    """
+    total       = len(genres)
+    total_pages = max(1, (total + GENRE_PAGE_SIZE - 1) // GENRE_PAGE_SIZE)
+    page        = 0
+
+    while True:
+        start       = page * GENRE_PAGE_SIZE
+        end         = min(start + GENRE_PAGE_SIZE, total)
+        page_genres = genres[start:end]
+
+        print(f"\n  Genres  --  page {page + 1} of {total_pages}  ({total} total)\n")
+        for i, g in enumerate(page_genres, 1):
+            print(f"    {i:2}. {g}")
+
+        nav_parts = []
+        if page > 0:
+            nav_parts.append("[p] prev")
+        if page < total_pages - 1:
+            nav_parts.append("[n] next")
+        pick_range = f"1" if len(page_genres) == 1 else f"1-{len(page_genres)}"
+        nav_parts.append(f"[{pick_range}] pick  [type name] search  [Enter] back")
+        print(f"\n  {' | '.join(nav_parts)}")
+
+        raw = input("  > ").strip()
+
+        if not raw:
+            return None
+        if raw.lower() == "n" and page < total_pages - 1:
+            page += 1
+            continue
+        if raw.lower() == "p" and page > 0:
+            page -= 1
+            continue
+
+        # Try numeric pick from current page
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(page_genres):
+                return page_genres[idx]
+            print("  Number out of range for this page.")
+            continue
+        except ValueError:
+            pass
+
+        # Treat as a name search across ALL genres
+        matches = [g for g in genres if raw.lower() in g.lower()]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Jump to the page containing the first match and highlight options
+            print(f'\n  Multiple matches for "{raw}": {", ".join(matches)}')
+            print("  Be more specific, or use a number to pick from the list above.")
+        else:
+            print(f'  No genre matching "{raw}".')
 
 
 def ask_activity() -> dict:
@@ -190,51 +324,26 @@ def interactive_mode(songs: list, system: MusicRecommenderSystem) -> None:
         # ── 1: Browse ────────────────────────────────────────────────────
         if choice == "1":
             pool = sample_diverse(songs, per_genre=2)
-            _show_and_pick(pool, liked)
+            paginate_and_pick(pool, liked, label="random songs")
 
         # ── 2: Search by title / artist ──────────────────────────────────
         elif choice == "2":
             query = input("\n  Enter song title or artist name: ").strip()
             if not query:
                 continue
-            pool = search_by_title(songs, query, max_results=20)
+            pool = search_by_title(songs, query)
             if not pool:
                 print(f'  No songs found matching "{query}".')
                 continue
-            if len(pool) == 20:
-                print(f'  Showing top 20 results for "{query}" (refine query for fewer results).')
-            _show_and_pick(pool, liked)
+            paginate_and_pick(pool, liked, label=f'results for "{query}"')
 
         # ── 3: Search by genre ───────────────────────────────────────────
         elif choice == "3":
-            genres = list_genres(songs)
-            print("\n  Available genres:\n")
-            for i, g in enumerate(genres, 1):
-                print(f"    {i:2}. {g}")
-            raw = input("\n  Enter a genre number or type a genre name: ").strip()
-
-            # Accept either a number or a typed name
-            genre = None
-            try:
-                idx = int(raw) - 1
-                if 0 <= idx < len(genres):
-                    genre = genres[idx]
-            except ValueError:
-                # Fuzzy: accept partial name match
-                matches = [g for g in genres if raw.lower() in g.lower()]
-                if len(matches) == 1:
-                    genre = matches[0]
-                elif len(matches) > 1:
-                    print(f'  Multiple genres match "{raw}": {matches}')
-                    print("  Be more specific.")
-                    continue
-                else:
-                    print(f'  No genre matching "{raw}".')
-                    continue
-
-            pool = search_by_genre(songs, genre, max_results=20)
-            print(f'\n  Showing up to 20 songs in "{genre}".')
-            _show_and_pick(pool, liked)
+            genre = paginate_genres(list_genres(songs))
+            if genre is None:
+                continue
+            pool = search_by_genre(songs, genre)
+            paginate_and_pick(pool, liked, label=f'songs in "{genre}"')
 
         # ── 4: Get recommendations ───────────────────────────────────────
         elif choice == "4":
@@ -363,7 +472,7 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Loading songs from {DATA_PATH.name} ...")
-    songs = load_spotify_csv(str(DATA_PATH), max_songs=10_000)
+    songs = load_spotify_csv(str(DATA_PATH), songs_per_genre=100)
     print(f"Loaded {len(songs):,} songs  |  "
           f"{len({s['genre'] for s in songs})} genres  |  "
           f"{len({s['mood'] for s in songs})} moods")
